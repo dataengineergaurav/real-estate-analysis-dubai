@@ -72,9 +72,9 @@ def publish_to_github_release(files):
         logger.error(f"An unexpected error occurred: {e}")    
 
 def main():
-    url = os.getenv("DLD_URL")
+    url = os.getenv("RENT_CONTRACTS")
     if not url:
-        logger.error("DLD_URL environment variable not set.")
+        logger.error("RENT_CONTRACTS environment variable not set.")
         return
 
     csv_filename = f'output/rent_contracts_{date.today()}.csv'
