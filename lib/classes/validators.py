@@ -1,0 +1,339 @@
+"""
+Data validation module for Dubai Real Estate rent contracts.
+
+This module provides comprehensive validation for rent contract data,
+ensuring data quality and flagging anomalies specific to Dubai market.
+"""
+
+import logging
+from typing import Dict, List, Tuple, Optional
+from datetime import datetime, timedelta
+import polars as pl
+
+from lib.config import (
+    VALIDATION_THRESHOLDS,
+    DATA_QUALITY_RULES,
+    is_residential,
+    is_commercial,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class ValidationResult:
+    """Container for validation results."""
+    
+    def __init__(self):
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
+        self.info: List[str] = []
+        self.is_valid: bool = True
+        
+    def add_error(self, message: str):
+        """Add an error message."""
+        self.errors.append(message)
+        self.is_valid = False
+        
+    def add_warning(self, message: str):
+        """Add a warning message."""
+        self.warnings.append(message)
+        
+    def add_info(self, message: str):
+        """Add an info message."""
+        self.info.append(message)
+        
+    def get_summary(self) -> Dict[str, int]:
+        """Get summary of validation results."""
+        return {
+            "errors": len(self.errors),
+            "warnings": len(self.warnings),
+            "info": len(self.info),
+            "is_valid": self.is_valid,
+        }
+        
+    def __str__(self) -> str:
+        """String representation of validation results."""
+        lines = []
+        if self.errors:
+            lines.append(f"Errors ({len(self.errors)}):")
+            lines.extend(f"  - {err}" for err in self.errors)
+        if self.warnings:
+            lines.append(f"Warnings ({len(self.warnings)}):")
+            lines.extend(f"  - {warn}" for warn in self.warnings)
+        if self.info:
+            lines.append(f"Info ({len(self.info)}):")
+            lines.extend(f"  - {info}" for info in self.info)
+        return "\n".join(lines) if lines else "All validations passed"
+
+
+class RentContractValidator:
+    """
+    Validator for Dubai rent contract data.
+    
+    Performs comprehensive validation including:
+    - Required field checks
+    - Data type validation
+    - Range validation (rent amounts, sizes, dates)
+    - Business logic validation
+    - Outlier detection
+    """
+    
+    def __init__(self, strict_mode: bool = False):
+        """
+        Initialize validator.
+        
+        Args:
+            strict_mode: If True, warnings are treated as errors
+        """
+        self.strict_mode = strict_mode
+        
+    def validate_dataframe(self, df: pl.DataFrame) -> ValidationResult:
+        """
+        Validate entire dataframe.
+        
+        Args:
+            df: Polars DataFrame containing rent contract data
+            
+        Returns:
+            ValidationResult object with all validation findings
+        """
+        result = ValidationResult()
+        
+        # Check if dataframe is empty
+        if df.height == 0:
+            result.add_error("DataFrame is empty")
+            return result
+            
+        result.add_info(f"Validating {df.height:,} records")
+        
+        # Validate schema
+        self._validate_schema(df, result)
+        
+        # Validate required fields
+        self._validate_required_fields(df, result)
+        
+        # Validate data types
+        self._validate_data_types(df, result)
+        
+        # Validate ranges
+        self._validate_rent_amounts(df, result)
+        self._validate_property_sizes(df, result)
+        self._validate_dates(df, result)
+        
+        # Validate business logic
+        self._validate_business_logic(df, result)
+        
+        # Detect outliers
+        self._detect_outliers(df, result)
+        
+        logger.info(f"Validation complete: {result.get_summary()}")
+        
+        return result
+        
+    def _validate_schema(self, df: pl.DataFrame, result: ValidationResult):
+        """Validate that expected columns exist."""
+        expected_cols = DATA_QUALITY_RULES["required_fields"]
+        missing_cols = [col for col in expected_cols if col not in df.columns]
+        
+        if missing_cols:
+            result.add_error(f"Missing required columns: {', '.join(missing_cols)}")
+            
+    def _validate_required_fields(self, df: pl.DataFrame, result: ValidationResult):
+        """Validate that required fields are not null."""
+        for field in DATA_QUALITY_RULES["required_fields"]:
+            if field not in df.columns:
+                continue
+                
+            null_count = df[field].null_count()
+            if null_count > 0:
+                pct = (null_count / df.height) * 100
+                msg = f"Field '{field}' has {null_count:,} null values ({pct:.2f}%)"
+                
+                if self.strict_mode:
+                    result.add_error(msg)
+                else:
+                    result.add_warning(msg)
+                    
+    def _validate_data_types(self, df: pl.DataFrame, result: ValidationResult):
+        """Validate data types of numeric and date fields."""
+        # Check numeric fields
+        for field in DATA_QUALITY_RULES.get("numeric_fields", []):
+            if field not in df.columns:
+                continue
+                
+            # Try to identify non-numeric values
+            if df[field].dtype not in [pl.Int64, pl.Int32, pl.Float64, pl.Float32]:
+                result.add_warning(f"Field '{field}' is not numeric type: {df[field].dtype}")
+                
+    def _validate_rent_amounts(self, df: pl.DataFrame, result: ValidationResult):
+        """Validate rent amounts are within reasonable ranges."""
+        if "annual_amount" not in df.columns:
+            return
+            
+        min_rent = VALIDATION_THRESHOLDS["min_annual_rent"]
+        max_rent = VALIDATION_THRESHOLDS["max_annual_rent"]
+        
+        # Filter out nulls
+        valid_rents = df.filter(pl.col("annual_amount").is_not_null())
+        
+        if valid_rents.height == 0:
+            return
+            
+        # Check for negative or zero rents
+        invalid_rents = valid_rents.filter(pl.col("annual_amount") <= 0)
+        if invalid_rents.height > 0:
+            result.add_error(f"Found {invalid_rents.height:,} records with rent <= 0")
+            
+        # Check for rents below minimum
+        below_min = valid_rents.filter(pl.col("annual_amount") < min_rent)
+        if below_min.height > 0:
+            pct = (below_min.height / valid_rents.height) * 100
+            result.add_warning(
+                f"Found {below_min.height:,} records with rent < AED {min_rent:,} ({pct:.2f}%)"
+            )
+            
+        # Check for rents above maximum
+        above_max = valid_rents.filter(pl.col("annual_amount") > max_rent)
+        if above_max.height > 0:
+            pct = (above_max.height / valid_rents.height) * 100
+            result.add_warning(
+                f"Found {above_max.height:,} records with rent > AED {max_rent:,} ({pct:.2f}%)"
+            )
+            
+    def _validate_property_sizes(self, df: pl.DataFrame, result: ValidationResult):
+        """Validate property sizes are within reasonable ranges."""
+        if "actual_area" not in df.columns:
+            return
+            
+        min_size = VALIDATION_THRESHOLDS["min_property_size"]
+        max_size = VALIDATION_THRESHOLDS["max_property_size"]
+        
+        valid_sizes = df.filter(pl.col("actual_area").is_not_null())
+        
+        if valid_sizes.height == 0:
+            return
+            
+        # Check for invalid sizes
+        invalid_sizes = valid_sizes.filter(pl.col("actual_area") <= 0)
+        if invalid_sizes.height > 0:
+            result.add_error(f"Found {invalid_sizes.height:,} records with size <= 0")
+            
+        # Check for sizes below minimum
+        below_min = valid_sizes.filter(pl.col("actual_area") < min_size)
+        if below_min.height > 0:
+            pct = (below_min.height / valid_sizes.height) * 100
+            result.add_warning(
+                f"Found {below_min.height:,} records with size < {min_size} sqft ({pct:.2f}%)"
+            )
+            
+        # Check for sizes above maximum
+        above_max = valid_sizes.filter(pl.col("actual_area") > max_size)
+        if above_max.height > 0:
+            pct = (above_max.height / valid_sizes.height) * 100
+            result.add_warning(
+                f"Found {above_max.height:,} records with size > {max_size:,} sqft ({pct:.2f}%)"
+            )
+            
+    def _validate_dates(self, df: pl.DataFrame, result: ValidationResult):
+        """Validate date fields."""
+        date_fields = DATA_QUALITY_RULES.get("date_fields", [])
+        
+        for field in date_fields:
+            if field not in df.columns:
+                continue
+                
+            # Check for null dates
+            null_count = df[field].null_count()
+            if null_count > 0:
+                pct = (null_count / df.height) * 100
+                result.add_warning(f"Field '{field}' has {null_count:,} null dates ({pct:.2f}%)")
+                
+    def _validate_business_logic(self, df: pl.DataFrame, result: ValidationResult):
+        """Validate business logic rules."""
+        # Check if end_date > start_date
+        if "contract_start_date" in df.columns and "contract_end_date" in df.columns:
+            invalid_dates = df.filter(
+                (pl.col("contract_start_date").is_not_null()) &
+                (pl.col("contract_end_date").is_not_null()) &
+                (pl.col("contract_end_date") <= pl.col("contract_start_date"))
+            )
+            
+            if invalid_dates.height > 0:
+                result.add_error(
+                    f"Found {invalid_dates.height:,} records where end_date <= start_date"
+                )
+                
+        # Check for reasonable contract durations
+        if "contract_start_date" in df.columns and "contract_end_date" in df.columns:
+            df_with_duration = df.filter(
+                (pl.col("contract_start_date").is_not_null()) &
+                (pl.col("contract_end_date").is_not_null())
+            ).with_columns(
+                ((pl.col("contract_end_date") - pl.col("contract_start_date")).dt.total_days()).alias("duration_days")
+            )
+            
+            min_days = VALIDATION_THRESHOLDS["min_contract_days"]
+            max_days = VALIDATION_THRESHOLDS["max_contract_days"]
+            
+            too_short = df_with_duration.filter(pl.col("duration_days") < min_days)
+            if too_short.height > 0:
+                result.add_warning(
+                    f"Found {too_short.height:,} contracts shorter than {min_days} days"
+                )
+                
+            too_long = df_with_duration.filter(pl.col("duration_days") > max_days)
+            if too_long.height > 0:
+                result.add_warning(
+                    f"Found {too_long.height:,} contracts longer than {max_days} days"
+                )
+                
+    def _detect_outliers(self, df: pl.DataFrame, result: ValidationResult):
+        """Detect statistical outliers in rent amounts."""
+        if "annual_amount" not in df.columns:
+            return
+            
+        valid_rents = df.filter(
+            (pl.col("annual_amount").is_not_null()) &
+            (pl.col("annual_amount") > 0)
+        )
+        
+        if valid_rents.height < 10:  # Need minimum sample size
+            return
+            
+        # Calculate IQR
+        stats = valid_rents.select([
+            pl.col("annual_amount").quantile(0.25).alias("q1"),
+            pl.col("annual_amount").quantile(0.75).alias("q3"),
+        ]).row(0)
+        
+        q1, q3 = stats
+        iqr = q3 - q1
+        
+        lower_bound = q1 - (3.0 * iqr)
+        upper_bound = q3 + (3.0 * iqr)
+        
+        outliers = valid_rents.filter(
+            (pl.col("annual_amount") < lower_bound) |
+            (pl.col("annual_amount") > upper_bound)
+        )
+        
+        if outliers.height > 0:
+            pct = (outliers.height / valid_rents.height) * 100
+            result.add_info(
+                f"Detected {outliers.height:,} statistical outliers in rent amounts ({pct:.2f}%)"
+            )
+
+
+def validate_rent_contracts(df: pl.DataFrame, strict: bool = False) -> ValidationResult:
+    """
+    Convenience function to validate rent contracts.
+    
+    Args:
+        df: DataFrame to validate
+        strict: If True, warnings are treated as errors
+        
+    Returns:
+        ValidationResult object
+    """
+    validator = RentContractValidator(strict_mode=strict)
+    return validator.validate_dataframe(df)
