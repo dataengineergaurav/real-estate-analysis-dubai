@@ -169,7 +169,7 @@ FILE_CONFIG = {
     "cache_dir": ".cache",
     "log_dir": "logs",
     "parquet_compression": "zstd",
-    "parquet_compression_level": 22,
+    "parquet_compression_level": 3,
 }
 
 

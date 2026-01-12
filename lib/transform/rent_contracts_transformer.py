@@ -48,10 +48,12 @@ class RentContractsTransformer:
             logger.info(f"Starting transformation: {self.input_file} -> {self.output_file}")
             
             # Read the CSV as a LazyFrame with schema overrides
-            logger.info("Reading CSV file...")
+            logger.info("Reading CSV file (lazy)...")
             lf = pl.scan_csv(
                 self.input_file,
                 null_values=["null", "NULL", ""],
+                encoding="utf8-lossy",
+                ignore_errors=True,
                 schema_overrides={
                     "ejari_property_sub_type_id": pl.Int64,
                     "actual_area": pl.Float64,
@@ -59,36 +61,34 @@ class RentContractsTransformer:
                 }
             )
             
-            # Collect to DataFrame for validation
-            df = lf.collect()
+            # Explicitly parse date columns
+            logger.info("Parsing date columns...")
+            lf = lf.with_columns([
+                pl.col("contract_start_date").str.to_date("%d-%m-%Y", strict=False),
+                pl.col("contract_end_date").str.to_date("%d-%m-%Y", strict=False),
+            ])
             
-            logger.info(f"Loaded {df.height:,} records with {len(df.columns)} columns")
-            
-            # Run validation if enabled
+            # Run validation and log stats on a sample if enabled
             if self.validate:
-                logger.info("Running data validation...")
-                validation_result = validate_rent_contracts(df, strict=False)
+                sample_size = 100_000
+                logger.info(f"Collecting sample of {sample_size:,} rows for validation and stats...")
+                df_sample = lf.head(sample_size).collect()
                 
-                logger.info(f"Validation summary: {validation_result.get_summary()}")
+                logger.info(f"Runing data validation on sample ({df_sample.height:,} records)...")
+                validation_result = validate_rent_contracts(df_sample, strict=False)
+                
+                logger.info(f"Validation summary (sample): {validation_result.get_summary()}")
                 
                 if validation_result.errors:
-                    logger.warning("Validation errors found:")
-                    for error in validation_result.errors[:10]:  # Show first 10 errors
+                    logger.warning("Validation errors found in sample:")
+                    for error in validation_result.errors[:10]:
                         logger.warning(f"  - {error}")
-                        
-                if validation_result.warnings:
-                    logger.info("Validation warnings:")
-                    for warning in validation_result.warnings[:5]:  # Show first 5 warnings
-                        logger.info(f"  - {warning}")
+                
+                # Log transformation statistics based on sample
+                self._log_statistics(df_sample)
             
-            # Log transformation statistics
-            self._log_statistics(df)
-            
-            # Convert back to LazyFrame for efficient writing
-            lf = df.lazy()
-            
-            # Write to Parquet with compression
-            logger.info("Writing to Parquet format...")
+            # Write to Parquet with compression using sink_parquet for memory efficiency
+            logger.info("Writing to Parquet format (streaming)...")
             compression = FILE_CONFIG["parquet_compression"]
             compression_level = FILE_CONFIG["parquet_compression_level"]
             
