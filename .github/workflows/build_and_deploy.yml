@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - dev
+      - main
     tags: 
       - '*'
 
@@ -14,7 +15,7 @@ jobs:
       ACTIONS_RUNNER_DEBUG: true
       ACTIONS_STEP_DEBUG: true  
       DLD_URL: ${{ secrets.DLD_URL }}
-      # RENT_CONTRACTS: ${{ secrets.RENT_CONTRACTS }}
+      RENT_CONTRACTS: ${{ secrets.RENT_CONTRACTS }}
       GH_TOKEN: ${{ secrets.GH_TOKEN }}  
       KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
       KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
