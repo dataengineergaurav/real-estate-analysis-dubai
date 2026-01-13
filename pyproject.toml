@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "real-estate-analysis-dubai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests",
+    "beautifulsoup4",
+    "python-dotenv",
+    "coloredlogs",
+    "cmake",
+    "setuptools",
+    "polars",
+    "pytest",
+    "jupyter",
+    "requests-mock",
+    "lib",
+]
+
+[tool.setuptools.packages.find]
+include = ["lib*"]
+exclude = ["output*"]
+
+[tool.uv.sources]
+lib = { path = "./lib", editable = true }

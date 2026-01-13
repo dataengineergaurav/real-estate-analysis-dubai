@@ -158,3 +158,28 @@ class RentContractsTransformer:
         except Exception as e:
             logger.warning(f"Error logging statistics: {e}")
 
+
+
+class StarSchema:
+    """
+    Use SQL query to find the businesses that are nearby the metro stations
+    """
+    def __init__(self, rent_contracts_df: pl.DataFrame, query: str):
+        self.rent_contracts_df = rent_contracts_df
+        self.query = query
+
+    def transform(self) -> pl.DataFrame:
+        """
+        Use SQL query to find the businesses that are nearby the metro stations
+
+        Args:
+            rent_contracts_df: Input DataFrame
+            query: SQL query to find the businesses that are nearby the metro stations. Import queries from analysis folder
+
+        Returns:
+            pl.DataFrame: DataFrame containing the businesses that are nearby the metro stations
+        """
+        
+        ctx = pl.SQLContext(rent_contracts_df=self.rent_contracts_df)
+        results = ctx.execute(self.query).collect()
+        return results

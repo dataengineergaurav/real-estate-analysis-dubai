@@ -1,3 +1,5 @@
+from pathlib import Path
+import polars as pl
 import os
 import subprocess
 from datetime import date
@@ -6,7 +8,7 @@ import logging
 
 from lib.extract.rent_contracts_downloader import RentContractsDownloader
 from lib.logging_helpers import get_logger, configure_root_logger
-from lib.transform.rent_contracts_transformer import RentContractsTransformer
+from lib.transform.rent_contracts_transformer import RentContractsTransformer, StarSchema
 from lib.classes.property_usage import PropertyUsage
 from lib.workspace.github_client import GitHubRelease
 
@@ -79,7 +81,7 @@ def main():
 
     csv_filename = f'output/rent_contracts_{date.today()}.csv'
     parquet_filename = f'dld_rent_contracts_{date.today()}.parquet'
-    property_usage_report_file = f'property_usage_report_{date.today()}.csv'
+    property_usage_report_file = f'dld_property_usage_report_{date.today()}.csv'
 
     release_checker = GitHubRelease('ggurjar333/real-estate-analysis-dubai')
     release_name = f'release-{date.today()}'
@@ -87,10 +89,29 @@ def main():
     if not release_checker.release_exists(release_name):
         download_rent_contracts(url, csv_filename)
         transform_rent_contracts(csv_filename, parquet_filename)
-        get_property_usage(parquet_filename, property_usage_report_file)
-        publish_to_github_release([parquet_filename, property_usage_report_file])
+        SQL_DIR = Path("lib/analysis")
+
+        # Load the base dataframe once for all transformations
+        base_df = pl.scan_parquet(parquet_filename).collect()
+        
+        for sql_file in sorted(SQL_DIR.glob("*.sql")):
+            if not sql_file.stem.startswith(("dim_", "fact_")):
+                continue
+
+            logger.info(f"Processing star schema: {sql_file.name}")
+            query = sql_file.read_text().strip().removesuffix(".")
+            output_file = f"output/{sql_file.stem}.parquet"
+
+            result = StarSchema(base_df, query).transform()
+            result.write_parquet(output_file)
+            logger.info(f"Saved star schema to {output_file}")
+
+        # List the parquet files into one list
+        parquet_files = [str(file) for file in Path(".").glob("*.parquet")]
+        # get_property_usage(parquet_filename, property_usage_report_file)
+        publish_to_github_release(parquet_files)
     else:
-        print(f"Release '{release_name}' already exists. No action needed.")
+        logger.info(f"Release '{release_name}' already exists. No action needed.")
             
 
 if __name__ == "__main__":
